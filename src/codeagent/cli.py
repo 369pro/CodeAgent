@@ -18,7 +18,7 @@ def main() -> None:
 
     config = load_config(args.config)
     llm = DeepSeekChatClient(config.llm)
-    tools = build_default_registry(Path(args.workspace))
+    tools = build_default_registry(Path(args.workspace), output_limit=config.agent.tool_output_limit)
     agent = ReActAgent(llm, tools, config.agent)
     if args.prompt:
         _run_once(agent, args.prompt)
@@ -48,6 +48,8 @@ def _run_once(agent: ReActAgent, prompt: str) -> None:
         print(f"Agent error: {exc}")
         return
     print(result.answer)
+    if result.record_path:
+        print(f"Run record: {result.record_path}")
 
 
 if __name__ == "__main__":

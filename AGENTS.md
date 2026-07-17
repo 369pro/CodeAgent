@@ -1,6 +1,6 @@
 # CodeAgent 项目规范
 
-本文件记录长期有效的项目协作规范。阶段性方案、设计记录、路线图不要放在这里，统一放到 `docs/` 下。
+本文件记录长期有效的项目协作规范。阶段性规格、设计记录、路线图不要放在这里，统一放到 `docs/` 下。
 
 ## 项目定位
 
@@ -9,12 +9,15 @@ CodeAgent 是一个 Python 技术栈的通用 code agent。当前优先目标是
 ## 文档结构
 
 - `AGENTS.md`: 项目长期规范，给人和 agent 看的协作约束。
-- `docs/plans/`: 阶段性方案、MVP 范围、路线图。
+- `docs/specs/`: 阶段性规格与版本方案。每个版本单独建目录，例如 `docs/specs/v1-tools-and-run-records/`，内部按需要放 `spec.md`、`plan.md`、`checklist.md`。
 - `docs/design/`: 稳定后的架构设计、模块边界、关键 ADR。
 - `docs/workflows/`: 垂类工作流说明，例如 text-to-sql。
 - `docs/evals/`: 后续评估方案、数据集说明、指标口径。
 
-当前第一版方案见 `docs/plans/v0-react-mvp.md`。
+当前版本文档：
+
+- v0 ReAct MVP: `docs/specs/v0-react-mvp/plan.md`
+- v1 工具与运行记录: `docs/specs/v1-tools-and-run-records/`
 
 ## 开发约定
 

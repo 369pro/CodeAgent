@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from io import StringIO
 from contextlib import redirect_stdout
+from io import StringIO
 import unittest
 
 from codeagent.cli import _run_once
