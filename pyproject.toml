@@ -1,0 +1,15 @@
+[project]
+name = "codeagent"
+version = "0.1.0"
+description = "A minimal Python ReAct code agent."
+requires-python = ">=3.11"
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+codeagent = "codeagent.cli:main"
