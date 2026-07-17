@@ -15,7 +15,7 @@ class ToolsTest(unittest.TestCase):
 
             self.assertEqual(
                 registry.names(),
-                ["bash", "edit_file", "git_diff", "git_status", "glob", "grep", "read_file", "write_file"],
+                ["bash", "edit_file", "find_file", "git_diff", "git_status", "glob", "grep", "read_file", "write_file"],
             )
 
     def test_read_write_edit_enforce_read_before_modify(self) -> None:
@@ -76,6 +76,21 @@ class ToolsTest(unittest.TestCase):
             invalid = registry.run("grep", {"pattern": "["})
             self.assertTrue(invalid.is_error)
             self.assertIn("invalid regex", invalid.output)
+
+    def test_find_file_recursively_finds_named_files(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            (root / "src" / "codeagent").mkdir(parents=True)
+            (root / "src" / "codeagent" / "chat.py").write_text("chat\n", encoding="utf-8")
+            (root / ".venv").mkdir()
+            (root / ".venv" / "chat.py").write_text("skip\n", encoding="utf-8")
+            registry = build_default_registry(root)
+
+            result = registry.run("find_file", {"name": "chat.py"})
+
+            self.assertFalse(result.is_error)
+            self.assertIn("src/codeagent/chat.py", result.output)
+            self.assertNotIn(".venv", result.output)
 
     def test_bash_reports_stdout_stderr_nonzero_and_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:

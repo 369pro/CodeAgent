@@ -6,6 +6,7 @@ from codeagent.tools.base import Tool, ToolContext, ToolResult, truncate_output
 from codeagent.tools.bash import Bash
 from codeagent.tools.edit_file import EditFile
 from codeagent.tools.file_state import FileStateCache
+from codeagent.tools.find_file import FindFile
 from codeagent.tools.git_diff import GitDiff
 from codeagent.tools.git_status import GitStatus
 from codeagent.tools.glob import Glob
@@ -56,6 +57,6 @@ def build_default_registry(workspace_root: str | Path = ".", output_limit: int =
         output_limit=output_limit,
     )
     registry = ToolRegistry(context)
-    for tool in [ReadFile(), WriteFile(), EditFile(), Glob(), Grep(), Bash(), GitStatus(), GitDiff()]:
+    for tool in [ReadFile(), WriteFile(), EditFile(), FindFile(), Glob(), Grep(), Bash(), GitStatus(), GitDiff()]:
         registry.register(tool)
     return registry
