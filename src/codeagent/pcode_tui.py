@@ -15,6 +15,7 @@ from textual.widgets import Footer, Markdown, OptionList, Static, TextArea
 from codeagent.chat import ProviderStreamingClient
 from codeagent.config import AgentConfig, ProviderConfig
 from codeagent.llm import LLMError
+from codeagent.observability import tracing_status_from_env
 from codeagent.pcode_agent import PCodeAgentSession
 from codeagent.tools import build_default_registry
 
@@ -23,7 +24,6 @@ SNAKE_BANNER = r"""
    /\_/\
   ( o.o )
    = w =
-
    ____   ____          _
   |  _ \ / ___|___   __| | ___
   | |_) | |   / _ \ / _` |/ _ \
@@ -164,7 +164,12 @@ class PCodeApp(App[None]):
         self.input_box = ChatInput("", id="input")
         self.input_box.placeholder = "Send a message..."
         yield self.input_box
-        yield Horizontal(Static("", id="provider-status"), Static("", id="model-status"), id="status")
+        yield Horizontal(
+            Static("", id="provider-status"),
+            Static("", id="model-status"),
+            Static(tracing_status_from_env(), id="trace-status"),
+            id="status",
+        )
 
     async def on_mount(self) -> None:
         if len(self.providers) == 1:

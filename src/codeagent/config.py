@@ -32,7 +32,7 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    max_steps: int = 10
+    max_steps: int = 18
     tool_output_limit: int = 8000
 
 

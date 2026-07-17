@@ -4,6 +4,15 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT_DIR"
 
+LANGFUSE_ENV="$ROOT_DIR/.codeagent/langfuse.env"
+if [ -f "$LANGFUSE_ENV" ]; then
+    set -a
+    . "$LANGFUSE_ENV"
+    set +a
+fi
+
+export LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-http://localhost:3000}"
+
 if command -v uv >/dev/null 2>&1; then
     exec uv run pcode "$@"
 fi

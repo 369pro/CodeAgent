@@ -8,6 +8,7 @@ from typing import Protocol
 from codeagent.chat import ChatRequest, StreamingChatClient
 from codeagent.config import AgentConfig
 from codeagent.llm import LLMError, Message
+from codeagent.observability import Tracer, build_tracer_from_env
 from codeagent.records import RunRecorder, utc_now
 from codeagent.tools import ToolRegistry
 
@@ -41,16 +42,40 @@ class PCodeAgentSession:
         tools: ToolRegistry,
         config: AgentConfig | None = None,
         system_prompt: str | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
         self.config = config or AgentConfig()
         self.system_prompt = system_prompt or build_system_prompt(tools)
         self.history: list[Message] = []
+        self.tracer = tracer or build_tracer_from_env()
 
     async def run_turn(self, user_input: str, events: TurnEvents) -> PCodeTurnResult:
         recorder = RunRecorder(self.tools.context.workspace_root)
         recorder.start(user_input)
+        try:
+            with self.tracer.start_run(
+                name="pcode.turn",
+                user_input=user_input,
+                metadata={"workspace": str(self.tools.context.workspace_root)},
+            ) as run_observation:
+                try:
+                    result = await self._run_turn_with_recording(user_input, events, recorder)
+                except Exception as exc:
+                    run_observation.update(output={"error": f"{type(exc).__name__}: {exc}"})
+                    raise
+                run_observation.update(output=result.answer)
+                return result
+        finally:
+            self.tracer.flush()
+
+    async def _run_turn_with_recording(
+        self,
+        user_input: str,
+        events: TurnEvents,
+        recorder: RunRecorder,
+    ) -> PCodeTurnResult:
         self.history.append(Message("user", user_input))
         tool_statuses: list[str] = []
 
@@ -71,7 +96,12 @@ class PCodeAgentSession:
                         result_text = f"Invalid Action Input: {exc}"
                         is_error = True
                     else:
-                        result = self.tools.run(tool_name, tool_input)
+                        with self.tracer.start_tool(name=tool_name, input=tool_input) as tool_observation:
+                            result = self.tools.run(tool_name, tool_input)
+                            tool_observation.update(
+                                output=result.output,
+                                metadata={**result.metadata, "is_error": result.is_error},
+                            )
                         result_text = result.output if not result.is_error else f"ERROR: {result.output}"
                         is_error = result.is_error
 
@@ -125,9 +155,20 @@ class PCodeAgentSession:
         request = ChatRequest(system_prompt=self.system_prompt, messages=list(self.history))
         parts: list[str] = []
 
-        async for chunk in self.client.stream(request):
-            parts.append(chunk)
-        return "".join(parts)
+        with self.tracer.start_generation(
+            name="pcode.llm",
+            model=getattr(getattr(self.client, "provider", None), "model", None),
+            input={
+                "system_prompt": request.system_prompt,
+                "messages": [message.__dict__ for message in request.messages],
+            },
+            metadata={"message_count": len(request.messages)},
+        ) as generation:
+            async for chunk in self.client.stream(request):
+                parts.append(chunk)
+            output = "".join(parts)
+            generation.update(output=output)
+            return output
 
 
 def build_system_prompt(tools: ToolRegistry) -> str:

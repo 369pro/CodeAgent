@@ -6,6 +6,7 @@ import re
 
 from codeagent.config import AgentConfig
 from codeagent.llm import ChatClient, Message
+from codeagent.observability import Tracer, build_tracer_from_env
 from codeagent.records import RunRecorder, utc_now
 from codeagent.tools import ToolRegistry
 
@@ -31,24 +32,52 @@ class RunResult:
 
 
 class ReActAgent:
-    def __init__(self, llm: ChatClient, tools: ToolRegistry, config: AgentConfig | None = None) -> None:
+    def __init__(
+        self,
+        llm: ChatClient,
+        tools: ToolRegistry,
+        config: AgentConfig | None = None,
+        tracer: Tracer | None = None,
+    ) -> None:
         self.llm = llm
         self.tools = tools
         self.config = config or AgentConfig()
+        self.tracer = tracer or build_tracer_from_env()
 
     def run(self, user_input: str) -> RunResult:
         recorder = RunRecorder(self.tools.context.workspace_root)
         recorder.start(user_input)
-        messages = [
-            Message("system", self._system_prompt()),
-            Message("user", user_input),
-        ]
+        try:
+            with self.tracer.start_run(
+                name="react.run",
+                user_input=user_input,
+                metadata={"workspace": str(self.tools.context.workspace_root)},
+            ) as run_observation:
+                try:
+                    result = self._run_with_recording(user_input, recorder)
+                except Exception as exc:
+                    run_observation.update(output={"error": f"{type(exc).__name__}: {exc}"})
+                    raise
+                run_observation.update(output=result.answer)
+                return result
+        finally:
+            self.tracer.flush()
+
+    def _run_with_recording(self, user_input: str, recorder: RunRecorder) -> RunResult:
+        messages = [Message("system", self._system_prompt()), Message("user", user_input)]
         steps: list[Step] = []
 
         try:
             for _ in range(self.config.max_steps):
                 step_started_at = utc_now()
-                output = self.llm.complete(messages)
+                with self.tracer.start_generation(
+                    name="react.llm",
+                    model=getattr(getattr(self.llm, "config", None), "model", None),
+                    input=[message.__dict__ for message in messages],
+                    metadata={"message_count": len(messages)},
+                ) as generation:
+                    output = self.llm.complete(messages)
+                    generation.update(output=output)
                 final = FINAL_RE.search(output)
                 if final:
                     answer = final.group("answer").strip()
@@ -82,7 +111,12 @@ class ReActAgent:
                     result_text = f"Invalid Action Input: {exc}"
                     is_error = True
                 else:
-                    result = self.tools.run(tool_name, tool_input)
+                    with self.tracer.start_tool(name=tool_name, input=tool_input) as tool_observation:
+                        result = self.tools.run(tool_name, tool_input)
+                        tool_observation.update(
+                            output=result.output,
+                            metadata={**result.metadata, "is_error": result.is_error},
+                        )
                     result_text = result.output if not result.is_error else f"ERROR: {result.output}"
                     is_error = result.is_error
 
