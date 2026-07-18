@@ -16,6 +16,7 @@ from codeagent.chat import ProviderStreamingClient
 from codeagent.config import AgentConfig, ProviderConfig
 from codeagent.llm import LLMError
 from codeagent.observability import tracing_status_from_env
+from codeagent.permissions import ApprovalScope, PermissionChecker, PermissionMode
 from codeagent.pcode_agent import PCodeAgentSession
 from codeagent.tools import build_default_registry
 
@@ -47,6 +48,29 @@ class ProviderSelectScreen(Screen[ProviderConfig]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(self.providers[event.option_index])
+
+
+class PermissionScreen(Screen[ApprovalScope | str]):
+    OPTIONS: tuple[tuple[str, ApprovalScope | str], ...] = (
+        ("Allow once", "once"),
+        ("Allow for session", "session"),
+        ("Allow permanently", "permanent"),
+        ("Deny", "deny"),
+    )
+
+    def __init__(self, tool_name: str, description: str) -> None:
+        super().__init__()
+        self.tool_name = tool_name
+        self.description = description
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"{self.tool_name} requires permission", id="select-title")
+        yield Static(self.description)
+        yield OptionList(*[label for label, _scope in self.OPTIONS], id="provider-list")
+        yield Footer()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self.OPTIONS[event.option_index][1])
 
 
 class ChatInput(TextArea):
@@ -103,6 +127,12 @@ class TurnView:
         self.text += text
         self.assistant.update(self.text)
         self.app.conversation.scroll_end(animate=False)
+
+    async def permission_requested(
+        self, tool_name: str, description: str
+    ) -> ApprovalScope | str:
+        result = await self.app.push_screen_wait(PermissionScreen(tool_name, description))
+        return result or "deny"
 
     async def finish(self) -> None:
         elapsed = time.monotonic() - self.started_at
@@ -187,8 +217,13 @@ class PCodeApp(App[None]):
 
     async def _select_provider(self, provider: ProviderConfig) -> None:
         self.provider = provider
+        permission_checker = PermissionChecker.for_workspace(
+            self.workspace, mode=PermissionMode(self.agent_config.permission_mode)
+        )
         registry = build_default_registry(
-            self.workspace, output_limit=self.agent_config.tool_output_limit
+            self.workspace,
+            output_limit=self.agent_config.tool_output_limit,
+            permission_checker=permission_checker,
         )
         self.session = PCodeAgentSession(
             client=ProviderStreamingClient(provider),

@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 
 from codeagent.chat import ChatRequest, StreamingChatClient, TextDelta, UsageDelta
 from codeagent.config import AgentConfig
 from codeagent.llm import LLMError, Message
 from codeagent.observability import Tracer, build_tracer_from_env
+from codeagent.permissions import ApprovalScope
 from codeagent.prompts import (
     GenerationUsage,
     build_environment_block,
@@ -33,6 +34,10 @@ class TurnEvents(Protocol):
     async def tool_finished(self, name: str, is_error: bool) -> None: ...
 
     async def final_delta(self, text: str) -> None: ...
+
+    async def permission_requested(
+        self, tool_name: str, description: str
+    ) -> ApprovalScope | Literal["deny"]: ...
 
 
 @dataclass
@@ -128,10 +133,26 @@ class PCodeAgentSession:
                         result_text = f"Invalid Action Input: {exc}"
                         is_error = True
                     else:
+                        approval_scope: ApprovalScope | Literal["deny"] | None = None
+                        tool = active_tools.get(tool_name)
+                        if tool is not None and active_tools.permission_checker is not None:
+                            decision = active_tools.permission_checker.check(tool, tool_input)
+                            if decision.effect == "ask":
+                                approval_scope = await events.permission_requested(
+                                    tool_name,
+                                    _permission_description(
+                                        tool_name,
+                                        decision.normalized_content or decision.content,
+                                    ),
+                                )
                         with self.tracer.start_tool(
                             name=tool_name, input=tool_input
                         ) as tool_observation:
-                            result = active_tools.run(tool_name, tool_input)
+                            result = active_tools.run(
+                                tool_name,
+                                tool_input,
+                                approval_scope=approval_scope,
+                            )
                             tool_observation.update(
                                 output=result.output,
                                 metadata={
@@ -261,3 +282,7 @@ class PCodeAgentSession:
 
 def build_system_prompt(tools: ToolRegistry) -> str:
     return build_stable_prompt(tools)
+
+
+def _permission_description(tool_name: str, content: str) -> str:
+    return f"{tool_name} wants to run: {content}" if content else f"{tool_name} requires approval."

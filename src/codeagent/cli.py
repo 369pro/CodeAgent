@@ -6,6 +6,7 @@ from pathlib import Path
 from codeagent.agent import ReActAgent
 from codeagent.config import load_config
 from codeagent.llm import DeepSeekChatClient, LLMError
+from codeagent.permissions import PermissionChecker, PermissionMode
 from codeagent.tools import build_default_registry
 
 
@@ -18,7 +19,15 @@ def main() -> None:
 
     config = load_config(args.config)
     llm = DeepSeekChatClient(config.llm)
-    tools = build_default_registry(Path(args.workspace), output_limit=config.agent.tool_output_limit)
+    workspace = Path(args.workspace).resolve()
+    checker = PermissionChecker.for_workspace(
+        workspace, mode=PermissionMode(config.agent.permission_mode)
+    )
+    tools = build_default_registry(
+        workspace,
+        output_limit=config.agent.tool_output_limit,
+        permission_checker=checker,
+    )
     agent = ReActAgent(llm, tools, config.agent)
     if args.prompt:
         _run_once(agent, args.prompt)

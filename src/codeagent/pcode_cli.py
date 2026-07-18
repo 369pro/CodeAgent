@@ -8,6 +8,7 @@ from codeagent.agent import ReActAgent
 from codeagent.cli import _run_once
 from codeagent.config import CodeAgentConfig, ConfigError, ProviderConfig, load_config
 from codeagent.llm import DeepSeekChatClient
+from codeagent.permissions import PermissionChecker, PermissionMode
 from codeagent.tools import build_default_registry
 
 
@@ -62,7 +63,14 @@ def _legacy_provider(config: CodeAgentConfig) -> ProviderConfig:
 
 def _run_agent_mode(config, workspace: Path, prompt: str | None) -> None:  # type: ignore[no-untyped-def]
     llm = DeepSeekChatClient(config.llm)
-    tools = build_default_registry(workspace, output_limit=config.agent.tool_output_limit)
+    checker = PermissionChecker.for_workspace(
+        workspace, mode=PermissionMode(config.agent.permission_mode)
+    )
+    tools = build_default_registry(
+        workspace,
+        output_limit=config.agent.tool_output_limit,
+        permission_checker=checker,
+    )
     agent = ReActAgent(llm, tools, config.agent)
     if prompt:
         _run_once(agent, prompt)

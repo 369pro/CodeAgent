@@ -11,6 +11,122 @@ CodeAgent 有两套本地可复盘机制：
 
 当前实现使用 Langfuse Python SDK v4 的手动 observation。原因是 CodeAgent 目前没有用 OpenAI SDK，而是通过 `urllib` / `httpx` 直接调用 OpenAI-compatible 或 Anthropic-compatible HTTP 接口；Langfuse 的 OpenAI wrapper 不适合作为第一版集成入口。
 
+### RunRecorder 内部结构
+
+`RunRecorder` 负责本地记录，核心数据模型：
+
+```python
+@dataclass
+class RunStep:
+    index: int                    # 步骤序号（第几步）
+    llm_output: str               # LLM 原始输出文本
+    tool_name: str | None         # 调用的工具名（Final Answer 时为 None）
+    tool_input: dict | None       # 工具参数
+    observation: str | None       # 工具返回结果 / 错误信息
+    is_error: bool                # 是否出错
+    generation_usage: GenerationUsage | None  # 本次 LLM 调用的 token 用量
+    started_at: str               # 步骤开始时间（ISO 8601）
+    ended_at: str | None          # 步骤结束时间
+
+@dataclass
+class RunRecord:
+    run_id: str                   # 唯一运行 ID（12 位 hex）
+    started_at: str               # 运行开始时间
+    ended_at: str | None          # 运行结束时间
+    status: str                   # "running" | "completed" | "failed" | "max_steps_exceeded"
+    workspace: str                # 工作目录路径
+    user_input: str               # 用户原始输入
+    final_answer: str | None      # 最终回答
+    steps: list[RunStep]          # 所有 ReAct 步骤
+    error: str | None             # 失败时的错误信息
+```
+
+`RunRecorder` 的生命周期：
+
+1. **创建**：`RunRecorder(workspace)` → 初始化 `RunRecord`，生成 `run_id`，状态设为 `"running"`
+2. **开始**：`recorder.start(user_input)` → 记录用户输入
+3. **每步记录**：`recorder.record_step(...)` → 追加 `RunStep` 到 `steps` 列表
+4. **完成/失败**：`recorder.complete(answer)` 或 `recorder.fail(error)` → 设置最终状态
+5. **落盘**：`recorder.save()` → 写入 `.codeagent/runs/YYYYMMDD-HHMMSS-{run_id}.json`
+
+落盘文件示例：
+
+```json
+{
+  "run_id": "a1b2c3d4e5f6",
+  "started_at": "2026-07-18T08:30:00+00:00",
+  "ended_at": "2026-07-18T08:30:05+00:00",
+  "status": "completed",
+  "workspace": "/Users/tsy/WorkSpace/LLMproj/CodeAgent",
+  "user_input": "帮我读一下 README.md",
+  "final_answer": "文件内容如下：...",
+  "steps": [
+    {
+      "index": 0,
+      "llm_output": "Action: read_file Action Input: {\"path\": \"README.md\"}",
+      "tool_name": "read_file",
+      "tool_input": {"path": "README.md"},
+      "observation": "# CodeAgent\n\n...",
+      "is_error": false,
+      "generation_usage": {
+        "input_tokens": 1523,
+        "output_tokens": 45,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0
+      },
+      "started_at": "2026-07-18T08:30:01+00:00",
+      "ended_at": "2026-07-18T08:30:02+00:00"
+    }
+  ],
+  "error": null
+}
+```
+
+### GenerationUsage 数据流
+
+`GenerationUsage` 是统一的 token 用量模型（`prompts.py:20-24`）：
+
+```python
+@dataclass(frozen=True)
+class GenerationUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+```
+
+它的端到端流转路径：
+
+```text
+Provider SSE usage chunk
+    │
+    ▼
+chat.py: parse_openai_usage() / parse_anthropic_usage()
+    │  归一化不同 provider 的字段名 → GenerationUsage 实例
+    ▼
+chat.py: UsageDelta(usage)   ← 作为流事件 yield 出去
+    │
+    ▼
+pcode_agent.py: _stream_llm_output()
+    │  async for event in self.client.stream(request):
+    │    if isinstance(event, UsageDelta):
+    │        usage = event.usage
+    │
+    ├──→ generation.update(metadata={"usage": usage.__dict__})
+    │        │
+    │        ▼  Langfuse UI 的 Metadata.usage
+    │
+    └──→ recorder.record_step(generation_usage=usage)
+             │
+             ▼  .codeagent/runs/*.json 的 steps[].generation_usage
+```
+
+关键点：
+- 同一个 `GenerationUsage` 实例**同时**写入 Langfuse trace 和本地 run record
+- OpenAI 协议需要 `stream_options: {"include_usage": True}` 才会在 SSE 末尾返回 usage chunk
+- Anthropic 协议通过 `message_start` 或 `message_delta` 事件携带 usage
+- 不同 provider 的原始字段名不同（如 `prompt_tokens` vs `input_tokens`），`parse_*_usage()` 负责统一
+
 ## 观测边界
 
 ### 一个用户输入对应一个 trace

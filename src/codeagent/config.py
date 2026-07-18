@@ -34,6 +34,7 @@ class LLMConfig:
 class AgentConfig:
     max_steps: int = 18
     tool_output_limit: int = 8000
+    permission_mode: str = "default"
 
 
 ProtocolName = Literal["openai", "anthropic"]
