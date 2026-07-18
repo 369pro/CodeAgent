@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import uuid
 
+from codeagent.prompts import GenerationUsage
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -19,6 +21,7 @@ class RunStep:
     tool_input: dict[str, object] | None = None
     observation: str | None = None
     is_error: bool = False
+    generation_usage: GenerationUsage | None = None
     started_at: str = field(default_factory=utc_now)
     ended_at: str | None = None
 
@@ -37,9 +40,13 @@ class RunRecord:
 
 
 class RunRecorder:
-    def __init__(self, workspace: str | Path, records_dir: str | Path | None = None) -> None:
+    def __init__(
+        self, workspace: str | Path, records_dir: str | Path | None = None
+    ) -> None:
         self.workspace = Path(workspace).resolve()
-        self.records_dir = Path(records_dir) if records_dir else self.workspace / ".codeagent" / "runs"
+        self.records_dir = (
+            Path(records_dir) if records_dir else self.workspace / ".codeagent" / "runs"
+        )
         self.record = RunRecord(
             run_id=uuid.uuid4().hex[:12],
             started_at=utc_now(),
@@ -62,6 +69,7 @@ class RunRecorder:
         tool_input: dict[str, object] | None = None,
         observation: str | None = None,
         is_error: bool = False,
+        generation_usage: GenerationUsage | None = None,
         started_at: str | None = None,
     ) -> None:
         self.record.steps.append(
@@ -72,6 +80,7 @@ class RunRecorder:
                 tool_input=tool_input,
                 observation=observation,
                 is_error=is_error,
+                generation_usage=generation_usage,
                 started_at=started_at or utc_now(),
                 ended_at=utc_now(),
             )
@@ -91,6 +100,9 @@ class RunRecorder:
         self.records_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = self.records_dir / f"{stamp}-{self.record.run_id}.json"
-        path.write_text(json.dumps(asdict(self.record), ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(asdict(self.record), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         self.path = path
         return path

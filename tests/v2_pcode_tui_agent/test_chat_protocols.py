@@ -8,29 +8,31 @@ from codeagent.llm import LLMError
 
 class ChatProtocolTest(unittest.TestCase):
     def test_parse_openai_content_delta_ignores_reasoning(self) -> None:
-        chunks = parse_openai_stream_data(
+        chunks, usage = parse_openai_stream_data(
             '{"choices":[{"delta":{"reasoning_content":"hidden","content":"hello"}}]}'
         )
 
         self.assertEqual(chunks, ["hello"])
+        self.assertIsNone(usage)
 
     def test_parse_anthropic_text_delta_ignores_thinking(self) -> None:
-        self.assertEqual(
-            parse_anthropic_stream_data(
-                '{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hidden"}}'
-            ),
-            [],
+        chunks, usage = parse_anthropic_stream_data(
+            '{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hidden"}}'
         )
-        self.assertEqual(
-            parse_anthropic_stream_data(
-                '{"type":"content_block_delta","delta":{"type":"text_delta","text":"visible"}}'
-            ),
-            ["visible"],
+        self.assertEqual(chunks, [])
+        self.assertIsNone(usage)
+
+        chunks, usage = parse_anthropic_stream_data(
+            '{"type":"content_block_delta","delta":{"type":"text_delta","text":"visible"}}'
         )
+        self.assertEqual(chunks, ["visible"])
+        self.assertIsNone(usage)
 
     def test_parse_anthropic_error_event(self) -> None:
         with self.assertRaisesRegex(LLMError, "bad key"):
-            parse_anthropic_stream_data('{"type":"error","error":{"message":"bad key"}}')
+            parse_anthropic_stream_data(
+                '{"type":"error","error":{"message":"bad key"}}'
+            )
 
 
 if __name__ == "__main__":

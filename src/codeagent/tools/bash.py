@@ -10,7 +10,7 @@ MAX_TIMEOUT = 600
 
 class Bash:
     name = "bash"
-    description = "Execute a shell command in the workspace and return stdout and stderr."
+    description = "Execute a shell command in the workspace and return stdout and stderr. Prefer dedicated tools when available."
     category = "command"
     parameters = {
         "type": "object",

@@ -29,6 +29,14 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools)
 
+    def read_only(self) -> "ToolRegistry":
+        registry = ToolRegistry(self.context)
+        for name in self.names():
+            tool = self._tools[name]
+            if tool.category == "read":
+                registry.register(tool)
+        return registry
+
     def descriptions(self) -> str:
         lines: list[str] = []
         for tool in self._tools.values():

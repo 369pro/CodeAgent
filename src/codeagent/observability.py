@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import os
+import random
 from typing import Any, Protocol
 
 
@@ -61,15 +62,17 @@ class NoopTracer:
 
 
 class LangfuseTracer:
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, sample_rate: float = 1.0) -> None:
         self.client = client
+        self.sample_rate = sample_rate
 
     def start_run(self, *, name: str, user_input: str, metadata: dict[str, object]) -> ObservationContext:
         try:
             context = self.client.start_as_current_observation(as_type="span", name=name)
         except Exception:  # noqa: BLE001 - observability must not break agent execution.
             return nullcontext(_NoopObservation())
-        return _UpdatingContext(context, input=user_input, metadata=metadata)
+        sampled_metadata = {**metadata, "sample_rate": self.sample_rate}
+        return _UpdatingContext(context, input=user_input, metadata=sampled_metadata)
 
     def start_generation(
         self,
@@ -129,15 +132,35 @@ class _UpdatingContext:
 def build_tracer_from_env() -> Tracer:
     if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
         return NoopTracer()
+    sample_rate = langfuse_sample_rate_from_env()
+    if sample_rate <= 0:
+        return NoopTracer()
+    if sample_rate < 1 and random.random() >= sample_rate:
+        return NoopTracer()
     try:
         from langfuse import get_client
     except ImportError:
         return NoopTracer()
-    return LangfuseTracer(get_client())
+    return LangfuseTracer(get_client(), sample_rate=sample_rate)
 
 
 def tracing_status_from_env() -> str:
     if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
         return "trace: off"
+    sample_rate = langfuse_sample_rate_from_env()
+    if sample_rate <= 0:
+        return "trace: off (sample_rate=0)"
     base_url = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST")
-    return f"trace: langfuse {base_url}" if base_url else "trace: langfuse"
+    status = f"trace: langfuse {base_url}" if base_url else "trace: langfuse"
+    if sample_rate < 1:
+        status += f" sample_rate={sample_rate:g}"
+    return status
+
+
+def langfuse_sample_rate_from_env() -> float:
+    raw = os.getenv("LANGFUSE_SAMPLE_RATE", "1").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 1.0
+    return min(max(value, 0.0), 1.0)

@@ -28,7 +28,9 @@ class PCodeCliTest(unittest.TestCase):
 
         self.assertEqual(provider.name, "deepseek")
         self.assertEqual(provider.protocol, "openai")
-        self.assertEqual(provider.request_endpoint, "https://api.deepseek.com/v1/chat/completions")
+        self.assertEqual(
+            provider.request_endpoint, "https://api.deepseek.com/v1/chat/completions"
+        )
 
     def test_chat_mode_requires_interactive_terminal(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -49,7 +51,7 @@ class PCodeCliTest(unittest.TestCase):
         async def run() -> None:
             calls: list[str] = []
 
-            async def fake_run_turn(self, text, turn):  # type: ignore[no-untyped-def]
+            async def fake_run_turn(self, text, turn, **kwargs):  # type: ignore[no-untyped-def]
                 calls.append(text)
                 await turn.final_delta("ok")
 
@@ -70,6 +72,59 @@ class PCodeCliTest(unittest.TestCase):
 
             self.assertEqual(calls, ["hello"])
             self.assertEqual(app.input_box.text, "")
+
+        asyncio.run(run())
+
+    def test_tui_plan_command_is_local(self) -> None:
+        async def run() -> None:
+            calls: list[str] = []
+
+            async def fake_run_turn(self, text, turn, **kwargs):  # type: ignore[no-untyped-def]
+                calls.append(text)
+
+            provider = ProviderConfig(
+                name="test", protocol="openai", model="test-model", api_key="secret"
+            )
+            app = PCodeApp((provider,), AgentConfig(), Path.cwd())
+
+            with patch.object(PCodeAgentSession, "run_turn", new=fake_run_turn):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app.input_box.text = "/plan"
+                    await pilot.press("enter")
+                    await pilot.pause()
+
+            self.assertTrue(app.planning_mode)
+            self.assertEqual(calls, [])
+
+        asyncio.run(run())
+
+    def test_tui_do_with_text_executes_plan(self) -> None:
+        async def run() -> None:
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            async def fake_run_turn(self, text, turn, **kwargs):  # type: ignore[no-untyped-def]
+                calls.append((text, kwargs))
+                await turn.final_delta("ok")
+
+            provider = ProviderConfig(
+                name="test", protocol="openai", model="test-model", api_key="secret"
+            )
+            app = PCodeApp((provider,), AgentConfig(), Path.cwd())
+            app.planning_mode = True
+
+            with patch.object(PCodeAgentSession, "run_turn", new=fake_run_turn):
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app.input_box.text = "/do implement it"
+                    await pilot.press("enter")
+                    await pilot.pause()
+
+            self.assertFalse(app.planning_mode)
+            self.assertEqual(
+                calls,
+                [("implement it", {"planning_mode": False, "execute_plan": True})],
+            )
 
         asyncio.run(run())
 
@@ -97,7 +152,9 @@ class PCodeCliTest(unittest.TestCase):
                 await turn.tool_finished("glob", is_error=False)
                 await turn.tool_finished("grep", is_error=True)
 
-            self.assertEqual(turn.tool_lines, ["Using glob... done", "Using grep... failed"])
+            self.assertEqual(
+                turn.tool_lines, ["Using glob... done", "Using grep... failed"]
+            )
 
         asyncio.run(run())
 

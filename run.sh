@@ -12,6 +12,7 @@ if [ -f "$LANGFUSE_ENV" ]; then
 fi
 
 export LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-http://localhost:3000}"
+export LANGFUSE_SAMPLE_RATE="${LANGFUSE_SAMPLE_RATE:-1}"
 
 if command -v uv >/dev/null 2>&1; then
     exec uv run pcode "$@"

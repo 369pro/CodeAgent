@@ -9,10 +9,15 @@ from unittest.mock import patch
 from pathlib import Path
 
 from codeagent.agent import ReActAgent
-from codeagent.chat import ChatRequest
+from codeagent.chat import ChatRequest, TextDelta
 from codeagent.config import AgentConfig
 from codeagent.llm import Message
-from codeagent.observability import build_tracer_from_env, tracing_status_from_env
+from codeagent.observability import (
+    NoopTracer,
+    build_tracer_from_env,
+    langfuse_sample_rate_from_env,
+    tracing_status_from_env,
+)
 from codeagent.pcode_agent import PCodeAgentSession
 from codeagent.tools import build_default_registry
 
@@ -96,12 +101,12 @@ class FakeLLM:
 
 
 class FakeStreamingClient:
-    async def stream(self, request: ChatRequest) -> AsyncIterator[str]:
+    async def stream(self, request: ChatRequest) -> AsyncIterator[TextDelta]:
         output = 'Thought: inspect\nAction: read_file\nAction Input: {"path":"README.md"}'
         if len(request.messages) > 1:
             output = "Final Answer: streamed answer"
         for index in range(0, len(output), 8):
-            yield output[index : index + 8]
+            yield TextDelta(output[index : index + 8])
 
 
 class FakeEvents:
@@ -143,6 +148,56 @@ class ObservabilityTest(unittest.TestCase):
     def test_tracing_status_reports_off_without_keys(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(tracing_status_from_env(), "trace: off")
+
+    def test_langfuse_sample_rate_controls_tracing_status(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGFUSE_PUBLIC_KEY": "pk-lf-secret",
+                "LANGFUSE_SECRET_KEY": "sk-lf-secret",
+                "LANGFUSE_SAMPLE_RATE": "0",
+            },
+            clear=True,
+        ):
+            self.assertEqual(tracing_status_from_env(), "trace: off (sample_rate=0)")
+            self.assertIsInstance(build_tracer_from_env(), NoopTracer)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGFUSE_PUBLIC_KEY": "pk-lf-secret",
+                "LANGFUSE_SECRET_KEY": "sk-lf-secret",
+                "LANGFUSE_BASE_URL": "http://localhost:3000",
+                "LANGFUSE_SAMPLE_RATE": "0.25",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                tracing_status_from_env(),
+                "trace: langfuse http://localhost:3000 sample_rate=0.25",
+            )
+
+    def test_langfuse_sample_rate_is_clamped_and_invalid_values_default_to_one(
+        self,
+    ) -> None:
+        with patch.dict("os.environ", {"LANGFUSE_SAMPLE_RATE": "-1"}, clear=True):
+            self.assertEqual(langfuse_sample_rate_from_env(), 0)
+        with patch.dict("os.environ", {"LANGFUSE_SAMPLE_RATE": "2"}, clear=True):
+            self.assertEqual(langfuse_sample_rate_from_env(), 1)
+        with patch.dict("os.environ", {"LANGFUSE_SAMPLE_RATE": "bad"}, clear=True):
+            self.assertEqual(langfuse_sample_rate_from_env(), 1)
+
+    def test_unsampled_langfuse_turn_returns_noop_without_importing_sdk(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGFUSE_PUBLIC_KEY": "pk-lf-secret",
+                "LANGFUSE_SECRET_KEY": "sk-lf-secret",
+                "LANGFUSE_SAMPLE_RATE": "0.5",
+            },
+            clear=True,
+        ), patch("codeagent.observability.random.random", return_value=0.9):
+            self.assertIsInstance(build_tracer_from_env(), NoopTracer)
 
     def test_react_run_traces_one_turn_with_nested_generation_and_tool(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:

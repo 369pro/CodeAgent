@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codeagent.chat import ChatRequest
+from codeagent.chat import ChatRequest, TextDelta, UsageDelta
+from codeagent.prompts import GenerationUsage
 from codeagent.config import AgentConfig
 from codeagent.pcode_agent import PCodeAgentSession
 from codeagent.tools import build_default_registry
@@ -17,11 +18,11 @@ class FakeStreamingClient:
         self.outputs = outputs
         self.requests: list[ChatRequest] = []
 
-    async def stream(self, request: ChatRequest) -> AsyncIterator[str]:
+    async def stream(self, request: ChatRequest) -> AsyncIterator[TextDelta]:
         self.requests.append(request)
         output = self.outputs.pop(0)
         for index in range(0, len(output), 7):
-            yield output[index : index + 7]
+            yield TextDelta(output[index : index + 7])
 
 
 class FakeEvents:
@@ -124,7 +125,9 @@ class PCodeAgentSessionTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as workspace:
                 root = Path(workspace)
                 (root / "src" / "codeagent").mkdir(parents=True)
-                (root / "src" / "codeagent" / "chat.py").write_text("class ProviderStreamingClient: ...\n", encoding="utf-8")
+                (root / "src" / "codeagent" / "chat.py").write_text(
+                    "class ProviderStreamingClient: ...\n", encoding="utf-8"
+                )
                 client = FakeStreamingClient(
                     [
                         'Thought: locate file\nAction: find_file\nAction Input: {"name": "chat.py"}',
@@ -141,10 +144,89 @@ class PCodeAgentSessionTest(unittest.TestCase):
 
                 result = await session.run_turn("分析 chat.py", events)
 
-                self.assertEqual(result.answer, "chat.py defines ProviderStreamingClient.")
-                self.assertEqual(events.tools, ["find_file:started", "find_file:done", "read_file:started", "read_file:done"])
+                self.assertEqual(
+                    result.answer, "chat.py defines ProviderStreamingClient."
+                )
+                self.assertEqual(
+                    events.tools,
+                    [
+                        "find_file:started",
+                        "find_file:done",
+                        "read_file:started",
+                        "read_file:done",
+                    ],
+                )
                 self.assertIn("src/codeagent/chat.py", session.history[-4].content)
                 self.assertIn("ProviderStreamingClient", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_planning_mode_uses_read_only_tool_surface_and_reminder(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "README.md").write_text("hello\n", encoding="utf-8")
+                client = FakeStreamingClient(
+                    [
+                        'Thought: try write\nAction: write_file\nAction Input: {"path":"README.md","content":"changed"}',
+                        "Final Answer: I will only plan.",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn(
+                    "plan an edit", events, planning_mode=True
+                )
+
+                self.assertEqual(result.answer, "I will only plan.")
+                self.assertEqual(
+                    events.tools, ["write_file:started", "write_file:failed"]
+                )
+                tool_definitions = client.requests[0].stable_prompt.split("# Available tools", 1)[1]
+                self.assertNotIn(" - write_file:", tool_definitions)
+                self.assertIn("<system-reminder>", client.requests[0].reminders[0])
+                self.assertNotIn(
+                    "<system-reminder>", client.requests[0].messages[-1].content
+                )
+                self.assertEqual(
+                    (root / "README.md").read_text(encoding="utf-8"), "hello\n"
+                )
+
+        asyncio.run(run())
+
+    def test_generation_usage_is_recorded(self) -> None:
+        class UsageStreamingClient(FakeStreamingClient):
+            async def stream(
+                self, request: ChatRequest
+            ) -> AsyncIterator[TextDelta | UsageDelta]:
+                self.requests.append(request)
+                yield TextDelta("Final Answer: done")
+                yield UsageDelta(
+                    GenerationUsage(
+                        input_tokens=10, output_tokens=2, cache_read_tokens=7
+                    )
+                )
+
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                client = UsageStreamingClient([])
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(workspace),
+                    config=AgentConfig(max_steps=1),
+                )
+
+                result = await session.run_turn("answer", FakeEvents())
+                assert result.record_path is not None
+                record_text = Path(result.record_path).read_text(encoding="utf-8")
+
+            self.assertIn('"input_tokens": 10', record_text)
+            self.assertIn('"cache_read_tokens": 7', record_text)
 
         asyncio.run(run())
 

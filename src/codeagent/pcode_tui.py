@@ -6,7 +6,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual import events
 from textual.message import Message
 from textual.screen import Screen
@@ -39,7 +39,10 @@ class ProviderSelectScreen(Screen[ProviderConfig]):
 
     def compose(self) -> ComposeResult:
         yield Static("Select provider", id="select-title")
-        yield OptionList(*[f"{provider.name}  ({provider.model})" for provider in self.providers], id="provider-list")
+        yield OptionList(
+            *[f"{provider.name}  ({provider.model})" for provider in self.providers],
+            id="provider-list",
+        )
         yield Footer()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -155,6 +158,7 @@ class PCodeApp(App[None]):
         self.input_box: ChatInput
         self.current_turn: TurnView | None = None
         self.busy = False
+        self.planning_mode = False
 
     def compose(self) -> ComposeResult:
         yield Static(self._banner_text(), id="banner")
@@ -167,6 +171,7 @@ class PCodeApp(App[None]):
         yield Horizontal(
             Static("", id="provider-status"),
             Static("", id="model-status"),
+            Static("mode: do", id="mode-status"),
             Static(tracing_status_from_env(), id="trace-status"),
             id="status",
         )
@@ -182,7 +187,9 @@ class PCodeApp(App[None]):
 
     async def _select_provider(self, provider: ProviderConfig) -> None:
         self.provider = provider
-        registry = build_default_registry(self.workspace, output_limit=self.agent_config.tool_output_limit)
+        registry = build_default_registry(
+            self.workspace, output_limit=self.agent_config.tool_output_limit
+        )
         self.session = PCodeAgentSession(
             client=ProviderStreamingClient(provider),
             tools=registry,
@@ -204,18 +211,48 @@ class PCodeApp(App[None]):
         if text == "/exit":
             self.exit()
             return
+        if text == "/plan":
+            self.input_box.text = ""
+            self.planning_mode = True
+            self._update_mode_status()
+            self.query_one("#ready", Static).update(
+                "Planning mode. Type /do to execute."
+            )
+            return
+
+        execute_plan = False
+        if text == "/do":
+            self.input_box.text = ""
+            self.planning_mode = False
+            self._update_mode_status()
+            self.query_one("#ready", Static).update(
+                "Execution mode. Type /plan to plan first."
+            )
+            return
+        if text.startswith("/do "):
+            text = text[4:].strip()
+            if not text:
+                return
+            self.planning_mode = False
+            execute_plan = True
+            self._update_mode_status()
+
         self.input_box.text = ""
         self.input_box.disabled = True
         self.busy = True
         turn = TurnView(self, text)
         self.current_turn = turn
         await turn.mount()
-        asyncio.create_task(self._run_turn(text, turn))
+        asyncio.create_task(self._run_turn(text, turn, execute_plan=execute_plan))
 
-    async def _run_turn(self, text: str, turn: TurnView) -> None:
+    async def _run_turn(
+        self, text: str, turn: TurnView, *, execute_plan: bool = False
+    ) -> None:
         try:
             assert self.session is not None
-            await self.session.run_turn(text, turn)
+            await self.session.run_turn(
+                text, turn, planning_mode=self.planning_mode, execute_plan=execute_plan
+            )
         except LLMError as exc:
             await turn.fail(str(exc))
         except Exception as exc:  # noqa: BLE001 - keep the TUI session recoverable.
@@ -231,6 +268,10 @@ class PCodeApp(App[None]):
     def _tick(self) -> None:
         if self.current_turn is not None:
             self.current_turn.tick()
+
+    def _update_mode_status(self) -> None:
+        mode = "plan" if self.planning_mode else "do"
+        self.query_one("#mode-status", Static).update(f"mode: {mode}")
 
     def _banner_text(self) -> str:
         return f"{SNAKE_BANNER}\nPCode {package_version()}    {self.workspace}"
