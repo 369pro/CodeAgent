@@ -620,12 +620,51 @@ observations:
 
 ## 与 Run Record 的关系
 
-Langfuse trace 和本地 run record 是互补关系：
+### 两套系统的定位
 
-- Langfuse trace：在线观测、排查调用链、看延迟和嵌套关系。
-- Run record：本地 JSON 事实记录，适合离线 diff、replay、测试断言和长期归档。
+Langfuse trace 和本地 run record 是**互补关系**，在 `PCodeAgentSession.run_turn()` 中**同时运作**：
 
-当前实现不会把 Langfuse trace id 写回 run record。后续如果需要从本地 JSON 跳到 Langfuse UI，可以在 `RunRecorder` schema 中增加可选 `trace_id` 字段。
+```text
+run_turn(user_input)
+│
+├── recorder = RunRecorder(workspace)     ← 始终启用，本地落盘
+│   ├── recorder.start(user_input)
+│   ├── recorder.record_step(...)  ×N     ← 每步都记
+│   ├── recorder.complete(answer)
+│   └── recorder.save()                   → .codeagent/runs/*.json
+│
+└── tracer.start_run(...)                 ← 按环境变量决定启用/Noop
+    ├── tracer.start_generation(...)      → Langfuse generation
+    ├── tracer.start_tool(...)  ×N        → Langfuse tool span
+    └── tracer.flush()                    → 批量发送到 Langfuse server
+```
+
+### 对比
+
+| 维度 | RunRecorder | Tracer (Langfuse) |
+|------|------------|-------------------|
+| 存储位置 | 本地磁盘 `.codeagent/runs/` | 远程 Langfuse 平台 (ClickHouse) |
+| 启用条件 | 始终启用 | 需配置 `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` |
+| 数据格式 | 扁平 JSON，按 step 记录 | 嵌套 span/generation 树 |
+| 用途 | 离线回放、diff、测试断言、长期归档 | 在线监控、调用链分析、延迟排查、Dashboard |
+| 异常处理 | 异常会中断 agent | 所有异常被静默吞掉，降级为 Noop |
+| 采样 | 全量 | 通过 `LANGFUSE_SAMPLE_RATE` 控制（0~1） |
+| Token 用量 | 存于 `steps[].generation_usage` | 存于 generation 的 `metadata.usage` |
+| 生命周期 | 一次 `run_turn()` 一个文件 | 一次 `run_turn()` 一棵 trace 树 |
+
+### 关键设计决策
+
+**可观测性不能中断业务**：`LangfuseTracer` 的每个方法都用 `try/except Exception` 包裹，任何 Langfuse SDK 异常都会被静默吞掉并降级为 `NoopTracer`。这意味着即使 Langfuse server 宕机或网络不通，agent 也能正常运行。
+
+**采样在 trace 根节点判断**：`build_tracer_from_env()` 在创建 tracer 时就决定是否采样（`observability.py:138`）。被采中的 turn 保留完整父子 observation 链路，未采中的整个 turn 都是 noop。这个判断只在创建时做一次，不会出现"父 span 被记录但子 generation 没记录"的碎片情况。
+
+**同一份数据两条路径**：`GenerationUsage` 在 `_stream_llm_output()` 中被提取后，同时传给 `generation.update()` 和 `recorder.record_step()`。两套系统拿到的是**同一份 token 用量数据**，只是存储位置不同。
+
+### 当前局限
+
+- 不会把 Langfuse trace id 写回 run record，无法从本地 JSON 直接跳转到 Langfuse UI。
+- 两套系统各自独立，没有交叉引用字段。
+- 后续可在 `RunRecord` 中增加可选 `trace_id` 字段，打通本地记录和远程 trace。
 
 ## 故障排查
 
