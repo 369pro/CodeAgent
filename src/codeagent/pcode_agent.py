@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+from pathlib import Path
 import re
 from typing import Literal, Protocol
 
@@ -13,9 +14,9 @@ from codeagent.permissions import ApprovalScope
 from codeagent.prompts import (
     GenerationUsage,
     build_environment_block,
+    build_plan_mode_reminder,
     build_stable_prompt,
     execute_plan_reminder,
-    planning_reminder,
 )
 from codeagent.records import RunRecorder, utc_now
 from codeagent.tools import ToolRegistry
@@ -45,6 +46,8 @@ class PCodeTurnResult:
     answer: str
     record_path: str | None = None
     tool_statuses: list[str] = field(default_factory=list)
+    plan_ready: bool = False
+    plan_path: str | None = None
 
 
 class PCodeAgentSession:
@@ -70,6 +73,9 @@ class PCodeAgentSession:
         *,
         planning_mode: bool = False,
         execute_plan: bool = False,
+        plan_path: str | Path | None = None,
+        approved_plan: str | None = None,
+        original_request: str | None = None,
     ) -> PCodeTurnResult:
         recorder = RunRecorder(self.tools.context.workspace_root)
         recorder.start(user_input)
@@ -86,6 +92,9 @@ class PCodeAgentSession:
                         recorder,
                         planning_mode=planning_mode,
                         execute_plan=execute_plan,
+                        plan_path=plan_path,
+                        approved_plan=approved_plan,
+                        original_request=original_request,
                     )
                 except Exception as exc:
                     run_observation.update(
@@ -105,17 +114,28 @@ class PCodeAgentSession:
         *,
         planning_mode: bool,
         execute_plan: bool,
+        plan_path: str | Path | None,
+        approved_plan: str | None,
+        original_request: str | None,
     ) -> PCodeTurnResult:
         self.history.append(Message("user", user_input))
         tool_statuses: list[str] = []
-        active_tools = self.tools.read_only() if planning_mode else self.tools
+        active_plan_path = self._prepare_plan_path(plan_path) if planning_mode else None
+        active_tools = (
+            self.tools.plan_mode(active_plan_path) if active_plan_path is not None else self.tools
+        )
 
         try:
             for index in range(self.config.max_steps):
                 step_number = index + 1
                 step_started_at = utc_now()
                 reminders = self._reminders_for_step(
-                    step_number, planning_mode=planning_mode, execute_plan=execute_plan
+                    step_number,
+                    planning_mode=planning_mode,
+                    execute_plan=execute_plan,
+                    plan_path=active_plan_path,
+                    approved_plan=approved_plan,
+                    original_request=original_request,
                 )
                 output, usage = await self._stream_llm_output(
                     events, active_tools, reminders
@@ -182,6 +202,22 @@ class PCodeAgentSession:
                         generation_usage=usage,
                         started_at=step_started_at,
                     )
+                    if (
+                        planning_mode
+                        and tool_name == "exit_plan_mode"
+                        and not is_error
+                        and active_plan_path is not None
+                    ):
+                        answer = "Plan ready for approval."
+                        recorder.complete(answer)
+                        record_path = recorder.save()
+                        return PCodeTurnResult(
+                            answer=answer,
+                            record_path=str(record_path),
+                            tool_statuses=tool_statuses,
+                            plan_ready=True,
+                            plan_path=str(active_plan_path),
+                        )
                     continue
 
                 final = FINAL_RE.search(output)
@@ -196,6 +232,18 @@ class PCodeAgentSession:
                     )
                     recorder.complete(answer)
                     record_path = recorder.save()
+                    if (
+                        planning_mode
+                        and active_plan_path is not None
+                        and self._plan_file_has_content(active_plan_path)
+                    ):
+                        return PCodeTurnResult(
+                            answer=answer,
+                            record_path=str(record_path),
+                            tool_statuses=tool_statuses,
+                            plan_ready=True,
+                            plan_path=str(active_plan_path),
+                        )
                     return PCodeTurnResult(
                         answer=answer,
                         record_path=str(record_path),
@@ -270,14 +318,46 @@ class PCodeAgentSession:
             return output, usage
 
     def _reminders_for_step(
-        self, step_number: int, *, planning_mode: bool, execute_plan: bool
+        self,
+        step_number: int,
+        *,
+        planning_mode: bool,
+        execute_plan: bool,
+        plan_path: Path | None,
+        approved_plan: str | None,
+        original_request: str | None,
     ) -> list[str]:
         reminders: list[str] = []
         if planning_mode:
-            reminders.append(planning_reminder(step_number))
+            assert plan_path is not None
+            reminders.append(
+                build_plan_mode_reminder(
+                    str(plan_path),
+                    plan_path.exists() and bool(plan_path.read_text(encoding="utf-8").strip()),
+                    step_number,
+                )
+            )
         elif execute_plan and step_number == 1:
-            reminders.append(execute_plan_reminder())
+            reminders.append(execute_plan_reminder(approved_plan, original_request))
         return reminders
+
+    def _prepare_plan_path(self, plan_path: str | Path | None) -> Path:
+        path = (
+            Path(plan_path)
+            if plan_path is not None
+            else self.tools.context.workspace_root / ".codeagent" / "plans" / "current.md"
+        )
+        if not path.is_absolute():
+            path = self.tools.context.workspace_root / path
+        resolved = path.resolve(strict=False)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    def _plan_file_has_content(self, plan_path: Path) -> bool:
+        try:
+            return plan_path.exists() and bool(plan_path.read_text(encoding="utf-8").strip())
+        except OSError:
+            return False
 
 
 def build_system_prompt(tools: ToolRegistry) -> str:

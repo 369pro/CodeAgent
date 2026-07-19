@@ -161,7 +161,7 @@ class PCodeAgentSessionTest(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_planning_mode_uses_read_only_tool_surface_and_reminder(self) -> None:
+    def test_planning_mode_allows_only_plan_file_writes(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as workspace:
                 root = Path(workspace)
@@ -188,14 +188,112 @@ class PCodeAgentSessionTest(unittest.TestCase):
                     events.tools, ["write_file:started", "write_file:failed"]
                 )
                 tool_definitions = client.requests[0].stable_prompt.split("# Available tools", 1)[1]
-                self.assertNotIn(" - write_file:", tool_definitions)
-                self.assertIn("<system-reminder>", client.requests[0].reminders[0])
+                self.assertIn(" - write_file:", tool_definitions)
+                self.assertNotIn(" - edit_file:", tool_definitions)
+                self.assertIn(" - exit_plan_mode:", tool_definitions)
+                self.assertNotIn(" - bash:", tool_definitions)
+                self.assertIn("Plan mode is active", client.requests[0].reminders[0])
+                self.assertIn(".codeagent/plans/current.md", client.requests[0].reminders[0])
                 self.assertNotIn(
                     "<system-reminder>", client.requests[0].messages[-1].content
                 )
                 self.assertEqual(
                     (root / "README.md").read_text(encoding="utf-8"), "hello\n"
                 )
+
+        asyncio.run(run())
+
+    def test_planning_mode_does_not_expose_edit_file(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "README.md").write_text("hello\n", encoding="utf-8")
+                client = FakeStreamingClient(
+                    [
+                        'Thought: bad edit\nAction: edit_file\nAction Input: {"path":"README.md","old":"hello","new":"changed"}',
+                        "Final Answer: I will revise the plan instead.",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn(
+                    "revise the plan", events, planning_mode=True
+                )
+
+                self.assertEqual(result.answer, "I will revise the plan instead.")
+                self.assertEqual(events.tools, ["edit_file:started", "edit_file:failed"])
+                self.assertEqual(
+                    (root / "README.md").read_text(encoding="utf-8"), "hello\n"
+                )
+                self.assertIn("Observation: ERROR: Unknown tool: edit_file", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_planning_mode_exits_after_non_empty_plan_file(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                plan_path = root / ".codeagent" / "plans" / "current.md"
+                client = FakeStreamingClient(
+                    [
+                        'Thought: write plan\nAction: write_file\nAction Input: {"path":".codeagent/plans/current.md","content":"# Plan\\n\\n1. Update README."}',
+                        'Thought: done\nAction: exit_plan_mode\nAction Input: {}',
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn(
+                    "plan an edit", events, planning_mode=True, plan_path=plan_path
+                )
+
+                self.assertTrue(result.plan_ready)
+                self.assertEqual(result.plan_path, str(plan_path.resolve(strict=False)))
+                self.assertEqual(result.answer, "Plan ready for approval.")
+                self.assertEqual(
+                    events.tools,
+                    [
+                        "write_file:started",
+                        "write_file:done",
+                        "exit_plan_mode:started",
+                        "exit_plan_mode:done",
+                    ],
+                )
+                self.assertIn("# Plan", plan_path.read_text(encoding="utf-8"))
+
+        asyncio.run(run())
+
+    def test_planning_mode_final_answer_with_plan_file_is_ready_for_approval(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                plan_path = root / ".codeagent" / "plans" / "current.md"
+                plan_path.parent.mkdir(parents=True)
+                plan_path.write_text("# Plan\n\n1. Update README.\n", encoding="utf-8")
+                client = FakeStreamingClient(["Final Answer: 计划已写好。"])
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=1),
+                )
+
+                result = await session.run_turn(
+                    "plan an edit", events, planning_mode=True, plan_path=plan_path
+                )
+
+                self.assertTrue(result.plan_ready)
+                self.assertEqual(result.plan_path, str(plan_path.resolve(strict=False)))
+                self.assertEqual(result.answer, "计划已写好。")
 
         asyncio.run(run())
 

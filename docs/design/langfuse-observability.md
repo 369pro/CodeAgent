@@ -666,6 +666,110 @@ run_turn(user_input)
 - 两套系统各自独立，没有交叉引用字段。
 - 后续可在 `RunRecord` 中增加可选 `trace_id` 字段，打通本地记录和远程 trace。
 
+## 数据保留与定时清理
+
+Langfuse trace 很容易占磁盘，因为 generation input 会包含 stable prompt、environment、reminders 和 messages；plan mode 下还会反复记录完整 planning reminder。清理策略分两层：先减少新增数据，再清理历史数据。
+
+### 减少新增数据
+
+CodeAgent 通过 `LANGFUSE_SAMPLE_RATE` 控制 Langfuse 采样率：
+
+```sh
+# 全量记录
+export LANGFUSE_SAMPLE_RATE=1
+
+# 只记录约 10% 的用户输入
+export LANGFUSE_SAMPLE_RATE=0.1
+
+# 完全关闭 Langfuse 上报
+export LANGFUSE_SAMPLE_RATE=0
+```
+
+本地开发推荐默认使用 `0.1` 或 `0.2`。需要排查单个问题时临时改成 `1`，排查完再调回去。采样只影响 Langfuse，不影响 `.codeagent/runs/*.json` 本地 run record。
+
+### 清理本地 Run Record
+
+`.codeagent/runs/*.json` 是 CodeAgent 自己落盘的本地记录，不属于 Langfuse。可以按天数删除：
+
+```sh
+# 查看 14 天前的 run record
+find .codeagent/runs -type f -name '*.json' -mtime +14 -print
+
+# 删除 14 天前的 run record
+find .codeagent/runs -type f -name '*.json' -mtime +14 -delete
+```
+
+macOS 上可以用 `launchd` 每天执行一次；Linux 上可以用 cron。
+
+### 清理 Langfuse 数据
+
+Langfuse v3 本地 Docker 的 tracing 数据主要在 ClickHouse，而不是 Postgres。优先级如下：
+
+1. **Langfuse 官方 Data Retention**：如果当前 Langfuse 版本/许可证支持，优先在 Project Settings 配置保留天数。它会按项目 nightly 删除旧的 traces、observations、scores 和 media assets。
+2. **ClickHouse TTL 或定时 DELETE**：如果本地 OSS 没有 Data Retention 功能，可以在 ClickHouse 层做 TTL 或定时删除。该方式依赖 Langfuse 当前 ClickHouse 表结构，升级 Langfuse 前要重新验证。
+3. **降低采样率**：如果只是本地开发调试，通常先把 `LANGFUSE_SAMPLE_RATE` 从 `1` 降到 `0.1`，收益最大也最安全。
+
+先查哪些表占空间：
+
+```sh
+docker exec langfuse-clickhouse-1 clickhouse-client --query "
+SELECT
+  database,
+  table,
+  formatReadableSize(sum(bytes)) AS size,
+  sum(rows) AS rows
+FROM system.parts
+WHERE active
+GROUP BY database, table
+ORDER BY sum(bytes) DESC
+LIMIT 20
+FORMAT PrettyCompact"
+```
+
+如果确认要保留最近 14 天，可以先 dry-run 统计旧数据：
+
+```sh
+docker exec langfuse-clickhouse-1 clickhouse-client --query "
+SELECT 'traces' AS table, count()
+FROM traces
+WHERE timestamp < now() - INTERVAL 14 DAY
+UNION ALL
+SELECT 'observations' AS table, count()
+FROM observations
+WHERE start_time < now() - INTERVAL 14 DAY
+UNION ALL
+SELECT 'scores' AS table, count()
+FROM scores
+WHERE timestamp < now() - INTERVAL 14 DAY
+FORMAT PrettyCompact"
+```
+
+确认无误后再删除：
+
+```sh
+docker exec langfuse-clickhouse-1 clickhouse-client --query "
+DELETE FROM observations WHERE start_time < now() - INTERVAL 14 DAY;
+DELETE FROM traces WHERE timestamp < now() - INTERVAL 14 DAY;
+DELETE FROM scores WHERE timestamp < now() - INTERVAL 14 DAY;"
+```
+
+注意事项：
+
+- 直接删 ClickHouse 是运维动作，不要在 agent 正常运行中自动触发。
+- 大量 DELETE 会产生 ClickHouse mutation，可能短时间影响 Langfuse 查询性能。
+- 如果 disk usage 仍涨，检查 ClickHouse `system.trace_log`、`system.text_log`、`system.opentelemetry_span_log` 等系统日志表；它们可能比 Langfuse 业务表更占空间。
+- 如果使用对象存储或 media assets，仅删 ClickHouse 不一定能清理所有 blob；官方 Data Retention 更完整。
+
+### 建议的本地开发默认值
+
+```sh
+LANGFUSE_SAMPLE_RATE=0.1
+RUN_RECORD_RETENTION_DAYS=14
+LANGFUSE_RETENTION_DAYS=14
+```
+
+其中 `RUN_RECORD_RETENTION_DAYS` 和 `LANGFUSE_RETENTION_DAYS` 目前是运维脚本约定，不是 CodeAgent 内置配置。后续可以增加 `scripts/cleanup_observability.sh` 和 launchd/cron 模板，把本地 run record 与 Langfuse ClickHouse 清理统一起来。
+
 ## 故障排查
 
 ### 401 Unauthorized

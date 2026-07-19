@@ -16,6 +16,7 @@ from codeagent.llm import Message
 from codeagent.prompts import (
     PromptBuilder,
     PromptSection,
+    build_plan_mode_reminder,
     build_environment_block,
     build_stable_prompt,
     build_system_reminder,
@@ -104,6 +105,18 @@ class PromptEngineeringTest(unittest.TestCase):
         self.assertIn("Plan workflow", planning_reminder(1))
         self.assertIn("Stay read-only", planning_reminder(2))
         self.assertIn("Plan workflow", planning_reminder(5))
+
+    def test_plan_mode_reminder_matches_current_tool_protocol(self) -> None:
+        reminder = build_plan_mode_reminder(
+            ".codeagent/plans/current.md", plan_exists=False, iteration=1
+        )
+
+        self.assertIn("Action: write_file", reminder)
+        self.assertIn("Action Input:", reminder)
+        self.assertIn("Action: exit_plan_mode", reminder)
+        self.assertIn("Do not use XML, DSML, tool_calls blocks", reminder)
+        self.assertNotIn("Agent tool", reminder)
+        self.assertNotIn("subagent_type", reminder)
 
     def test_usage_parsers_default_missing_cache_fields_to_zero(self) -> None:
         openai_usage = parse_openai_usage(

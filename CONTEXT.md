@@ -56,6 +56,26 @@ _Avoid_: safe tools, planning tools
 代理轮次中的一次模型生成尝试，可能产生工具调用、最终回答或格式错误反馈。
 _Avoid_: iteration, retry
 
+**Agent Session（代理会话）**:
+一次连续的 CodeAgent 交互上下文，包含多次代理轮次和共享的会话状态。
+_Avoid_: chat, conversation
+
+**Lifecycle Event（生命周期事件）**:
+Agent 生命周期中的一个可观察触发点，例如会话开始、轮次开始、模型消息产生、工具执行前或工具执行后。
+_Avoid_: callback, trigger
+
+**Hook Rule（Hook 规则）**:
+声明式自动化规则，由生命周期事件、可选条件和固定动作组成。
+_Avoid_: automation, script
+
+**Hook Action（Hook 动作）**:
+Hook 规则命中后执行的固定行为，例如运行命令、注入提示、发送 HTTP 请求或启动子 Agent。
+_Avoid_: handler, callback
+
+**Hook Condition（Hook 条件）**:
+Hook 规则中用于筛选事件上下文的匹配表达式。省略时表示该规则无条件触发。
+_Avoid_: matcher, filter
+
 **Prompt Module（提示模块）**:
 稳定系统指令中的一个有名称和优先级的职责片段。提示模块按优先级装配成稳定提示块。
 _Avoid_: prompt section, instruction chunk

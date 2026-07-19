@@ -221,11 +221,18 @@ def _stable_json(value: object) -> str:
 # ---------------------------------------------------------------------------
 
 _PLAN_MODE_FULL_REMINDER = """\
-Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
+Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
 
 ## Plan File Info:
 {plan_file_info}
 You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+
+## Tool Protocol
+Use only the CodeAgent text tool protocol. Do not use XML, DSML, tool_calls blocks, or unavailable tools such as Agent/subagents.
+
+Tool call format:
+Action: tool_name
+Action Input: {{"key": "value"}}
 
 ## Plan Workflow
 
@@ -233,15 +240,15 @@ You should build your plan incrementally by writing to or editing this file. NOT
 Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions.
 
 1. Focus on understanding the user's request and the code associated with their request. Actively search for existing functions, utilities, and patterns that can be reused.
-2. Use the Agent tool with subagent_type="explore" to explore the codebase. You can launch up to 3 explore agents IN PARALLEL.
+2. Inspect the code yourself with read-only tools such as glob, find_file, grep, read_file, git_status, and git_diff.
 
 ### Phase 2: Design
 Goal: Design an implementation approach.
-Call the Agent tool with subagent_type="plan" to design the implementation based on the user's intent and your exploration results.
+Design the implementation based on the user's intent and your exploration results.
 
 ### Phase 3: Review
 Goal: Review the plan(s) and ensure alignment with the user's intentions.
-1. Read the critical files identified by agents to deepen your understanding
+1. Read any critical files needed to deepen your understanding
 2. Ensure that the plans align with the user's original request
 
 ### Phase 4: Final Plan
@@ -251,12 +258,21 @@ Goal: Write your final plan to the plan file (the only file you can edit).
 - Include the paths of critical files to be modified
 - Include a verification section describing how to test the changes
 
-### Phase 5: Call ExitPlanMode
-At the very end of your turn, call ExitPlanMode to indicate that you are done planning."""
+### Phase 5: Call exit_plan_mode
+At the very end of your turn, call the `exit_plan_mode` tool to indicate that you are done planning.
+
+Example plan-file write:
+Action: write_file
+Action Input: {{"path": "{plan_path}", "content": "# Plan\\n\\n## Context\\n..."}}
+
+Example exit:
+Action: exit_plan_mode
+Action Input: {{}}"""
 
 _PLAN_MODE_SPARSE_REMINDER = (
     "Plan mode still active (see full instructions earlier in conversation). "
-    "Read-only except plan file ({plan_path}). Follow 5-phase workflow."
+    "Read-only except plan file ({plan_path}). Use only Action/Action Input, "
+    "never DSML/tool_calls or Agent/subagents. Follow the 5-phase workflow."
 )
 
 _REMINDER_INTERVAL = 5
@@ -269,7 +285,7 @@ def build_plan_mode_reminder(
         plan_file_info = (
             f"Plan file: {plan_path}\n"
             f"A plan file already exists at {plan_path}. "
-            "You can read it and make incremental edits using the EditFile tool."
+            "Read it first, then update it by writing the complete revised plan with the WriteFile tool."
         )
     else:
         plan_file_info = (
@@ -280,14 +296,20 @@ def build_plan_mode_reminder(
 
     # 第 1 轮：一定是完整版（用户刚进入 plan mode，需要详细说明规则）
     if iteration == 1:
-        return _PLAN_MODE_FULL_REMINDER.format(plan_file_info=plan_file_info)
+        return _PLAN_MODE_FULL_REMINDER.format(
+            plan_file_info=plan_file_info,
+            plan_path=plan_path,
+        )
 
     # 把迭代轮次按每 5 轮分桶（bucket 0 = 第 1-5 轮，bucket 1 = 第 6-10 轮，...）
     attachment_index = (iteration - 1) // _REMINDER_INTERVAL
     # bucket 编号是 5 的倍数时（0, 5, 10, 15, ...），重新下发完整版作为"定期强化"
     # 也就是说：迭代 1-5 是 full，之后每 25 轮（5×5）再出现 5 轮 full
     if attachment_index % _REMINDER_INTERVAL == 0:
-        return _PLAN_MODE_FULL_REMINDER.format(plan_file_info=plan_file_info)
+        return _PLAN_MODE_FULL_REMINDER.format(
+            plan_file_info=plan_file_info,
+            plan_path=plan_path,
+        )
 
     # 其他轮次只给精简版，节省上下文 token
     return _PLAN_MODE_SPARSE_REMINDER.format(plan_path=plan_path)
@@ -422,9 +444,26 @@ Plan mode is active. Stay read-only except for the plan file if one is explicitl
     return build_system_reminder("Plan mode is still active. Stay read-only.")
 
 
-def execute_plan_reminder() -> str:
+def execute_plan_reminder(
+    approved_plan: str | None = None, original_request: str | None = None
+) -> str:
+    if not approved_plan:
+        return build_system_reminder(
+            "Execute the approved plan. Keep changes scoped to the requested implementation and verify the result before reporting completion."
+        )
+    original_block = (
+        f"\n\nOriginal planning request:\n{original_request.strip()}"
+        if original_request
+        else ""
+    )
     return build_system_reminder(
-        "Execute the approved plan. Keep changes scoped to the requested implementation and verify the result before reporting completion."
+        f"""\
+Execute the approved plan below. Keep changes scoped to the plan and verify the result.
+{original_block}
+
+<approved-plan>
+{approved_plan.strip()}
+</approved-plan>"""
     )
 
 

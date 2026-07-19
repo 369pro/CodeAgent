@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from codeagent.permissions import ApprovalScope, PermissionChecker
+from codeagent.permissions import ApprovalScope, PermissionChecker, PermissionMode
 from codeagent.tools.base import Tool, ToolContext, ToolResult, truncate_output
 from codeagent.tools.bash import Bash
 from codeagent.tools.edit_file import EditFile
+from codeagent.tools.exit_plan_mode import ExitPlanMode
 from codeagent.tools.file_state import FileStateCache
 from codeagent.tools.find_file import FindFile
 from codeagent.tools.git_diff import GitDiff
@@ -40,6 +41,33 @@ class ToolRegistry:
             tool = self._tools[name]
             if tool.category == "read":
                 registry.register(tool)
+        return registry
+
+    def plan_mode(self, plan_path: str | Path) -> "ToolRegistry":
+        permission_checker = (
+            self.permission_checker.with_mode(
+                PermissionMode.PLAN, plan_file_path=plan_path
+            )
+            if self.permission_checker is not None
+            else PermissionChecker.for_workspace(
+                self.context.workspace_root,
+                mode=PermissionMode.PLAN,
+            ).with_mode(PermissionMode.PLAN, plan_file_path=plan_path)
+        )
+        registry = ToolRegistry(self.context, permission_checker)
+        for name in [
+            "read_file",
+            "find_file",
+            "grep",
+            "glob",
+            "git_status",
+            "git_diff",
+            "write_file",
+        ]:
+            tool = self._tools.get(name)
+            if tool is not None:
+                registry.register(tool)
+        registry.register(ExitPlanMode(plan_path))
         return registry
 
     def descriptions(self) -> str:

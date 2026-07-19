@@ -27,11 +27,17 @@ class PermissionChecker:
         sandbox: PathSandbox,
         rule_engine: RuleEngine,
         mode: PermissionMode = PermissionMode.DEFAULT,
+        plan_file_path: str | Path | None = None,
     ) -> None:
         self.detector = detector
         self.sandbox = sandbox
         self.rule_engine = rule_engine
         self.mode = mode
+        self.plan_file_path = (
+            Path(plan_file_path).expanduser().resolve(strict=False)
+            if plan_file_path is not None
+            else None
+        )
 
     @classmethod
     def for_workspace(
@@ -60,6 +66,12 @@ class PermissionChecker:
 
         if self.mode == PermissionMode.PLAN and tool.name in _PLAN_ALLOWED_TOOLS:
             return Decision("allow", "plan mode read-only tool", content, normalized)
+        if self.mode == PermissionMode.PLAN and tool.name in {"write_file", "edit_file"}:
+            if self._is_active_plan_file(content):
+                return Decision("allow", "plan mode plan-file write", content, normalized)
+            return Decision("deny", "plan mode allows writes only to the active plan file", content, normalized)
+        if self.mode == PermissionMode.PLAN and tool.name == "exit_plan_mode":
+            return Decision("allow", "plan mode exit tool", content, normalized)
 
         if tool.category == "command":
             hit, reason = self.detector.detect(content)
@@ -87,6 +99,17 @@ class PermissionChecker:
         elif scope == "permanent":
             self.rule_engine.append_local_rule(rule)
 
+    def with_mode(
+        self, mode: PermissionMode, *, plan_file_path: str | Path | None = None
+    ) -> "PermissionChecker":
+        return PermissionChecker(
+            detector=self.detector,
+            sandbox=self.sandbox,
+            rule_engine=self.rule_engine,
+            mode=mode,
+            plan_file_path=plan_file_path,
+        )
+
     def _normalized_content(self, tool_name: str, content: str) -> str:
         if not content or tool_name not in {"read_file", "write_file", "edit_file", "git_diff"}:
             return content.strip() if tool_name == "bash" else content
@@ -97,3 +120,14 @@ class PermissionChecker:
             return display_path(self.sandbox.project_root, path.resolve(strict=False))
         except OSError:
             return content
+
+    def _is_active_plan_file(self, content: str) -> bool:
+        if not content or self.plan_file_path is None:
+            return False
+        path = Path(content).expanduser()
+        if not path.is_absolute():
+            path = self.sandbox.project_root / path
+        try:
+            return path.resolve(strict=False) == self.plan_file_path
+        except OSError:
+            return False

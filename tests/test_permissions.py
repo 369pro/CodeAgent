@@ -144,6 +144,28 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual(rule.tool_name, "bash")
         self.assertTrue(rule.matches("bash", "git status"))
 
+    def test_plan_mode_allows_only_active_plan_file_write(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            plan_path = root / ".codeagent" / "plans" / "current.md"
+            checker = PermissionChecker.for_workspace(
+                root, mode=PermissionMode.PLAN
+            ).with_mode(PermissionMode.PLAN, plan_file_path=plan_path)
+            registry = build_default_registry(root, permission_checker=checker)
+
+            allowed = registry.run(
+                "write_file",
+                {"path": ".codeagent/plans/current.md", "content": "# Plan\n"},
+            )
+            denied = registry.run(
+                "write_file",
+                {"path": "README.md", "content": "changed\n"},
+            )
+
+            self.assertFalse(allowed.is_error)
+            self.assertTrue(denied.is_error)
+            self.assertIn("active plan file", denied.output)
+
 
 if __name__ == "__main__":
     unittest.main()
