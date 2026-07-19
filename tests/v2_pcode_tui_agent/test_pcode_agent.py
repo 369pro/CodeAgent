@@ -161,6 +161,235 @@ class PCodeAgentSessionTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_runs_simple_xml_tool_call_fallback(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "src" / "codeagent").mkdir(parents=True)
+                (root / "src" / "codeagent" / "llm.py").write_text(
+                    "class DeepSeekChatClient: ...\n", encoding="utf-8"
+                )
+                client = FakeStreamingClient(
+                    [
+                        "Let me find and read the file.\n\n"
+                        "<tool_call>\nfind_file\nname\nllm.py\n</tool_call>",
+                        "Final Answer: 找到了 llm.py。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py的内容", events)
+
+                self.assertEqual(result.answer, "找到了 llm.py。")
+                self.assertEqual(events.tools, ["find_file:started", "find_file:done"])
+                self.assertIn("src/codeagent/llm.py", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_runs_dsml_tool_call_fallback(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "src" / "codeagent").mkdir(parents=True)
+                (root / "src" / "codeagent" / "llm.py").write_text(
+                    "class DeepSeekChatClient: ...\n", encoding="utf-8"
+                )
+                client = FakeStreamingClient(
+                    [
+                        '<| DSML | tool_calls>\n'
+                        '<| DSML | invoke name="find_file">\n'
+                        '<| DSML | parameter name="name" string="true">llm.py</| DSML | parameter>\n'
+                        "</| DSML | invoke>\n"
+                        "</| DSML | tool_calls>",
+                        "Final Answer: 找到了 llm.py。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py的内容", events)
+
+                self.assertEqual(result.answer, "找到了 llm.py。")
+                self.assertEqual(events.tools, ["find_file:started", "find_file:done"])
+                self.assertIn("src/codeagent/llm.py", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_runs_fullwidth_pipe_dsml_tool_call_fallback(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "src" / "codeagent").mkdir(parents=True)
+                (root / "src" / "codeagent" / "llm.py").write_text(
+                    "class DeepSeekChatClient: ...\n", encoding="utf-8"
+                )
+                client = FakeStreamingClient(
+                    [
+                        '<｜｜DSML｜｜tool_calls>\n'
+                        '<｜｜DSML｜｜invoke name="find_file">\n'
+                        '<｜｜DSML｜｜parameter name="name" string="true">llm.py</｜｜DSML｜｜parameter>\n'
+                        "</｜｜DSML｜｜invoke>\n"
+                        "</｜｜DSML｜｜tool_calls>",
+                        "Final Answer: 找到了 llm.py。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py的内容", events)
+
+                self.assertEqual(result.answer, "找到了 llm.py。")
+                self.assertEqual(events.tools, ["find_file:started", "find_file:done"])
+                self.assertIn("src/codeagent/llm.py", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_runs_named_xml_tool_call_fallback(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "src" / "codeagent").mkdir(parents=True)
+                (root / "src" / "codeagent" / "llm.py").write_text(
+                    "class DeepSeekChatClient: ...\n", encoding="utf-8"
+                )
+                client = FakeStreamingClient(
+                    [
+                        "<find_file>\n"
+                        "<name>llm.py</name>\n"
+                        f"<path>{root}</path>\n"
+                        "</find_file>",
+                        "Final Answer: 找到了 llm.py。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py的内容", events)
+
+                self.assertEqual(result.answer, "找到了 llm.py。")
+                self.assertEqual(events.tools, ["find_file:started", "find_file:done"])
+                self.assertIn("src/codeagent/llm.py", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_runs_named_xml_glob_tool_call_fallback(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "src" / "codeagent").mkdir(parents=True)
+                (root / "src" / "codeagent" / "llm.py").write_text(
+                    "class DeepSeekChatClient: ...\n", encoding="utf-8"
+                )
+                client = FakeStreamingClient(
+                    [
+                        "<glob>\n"
+                        "<pattern>**/llm.py</pattern>\n"
+                        f"<path>{root}</path>\n"
+                        "</glob>",
+                        "Final Answer: 找到了 llm.py。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py的内容", events)
+
+                self.assertEqual(result.answer, "找到了 llm.py。")
+                self.assertEqual(events.tools, ["glob:started", "glob:done"])
+                self.assertIn("src/codeagent/llm.py", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_repeated_same_tool_failures_open_circuit_breaker(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                client = FakeStreamingClient(
+                    [
+                        'Thought: read\nAction: read_file\nAction Input: {"path":"missing.txt"}',
+                        'Thought: retry\nAction: read_file\nAction Input: {"path":"missing.txt"}',
+                        'Thought: retry again\nAction: read_file\nAction Input: {"path":"missing.txt"}',
+                        'Thought: retry fourth\nAction: read_file\nAction Input: {"path":"missing.txt"}',
+                        "Final Answer: I will stop retrying read_file.",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(workspace),
+                    config=AgentConfig(max_steps=5),
+                )
+
+                result = await session.run_turn("read missing file", events)
+
+                self.assertEqual(result.answer, "I will stop retrying read_file.")
+                self.assertEqual(
+                    events.tools,
+                    [
+                        "read_file:started",
+                        "read_file:failed",
+                        "read_file:started",
+                        "read_file:failed",
+                        "read_file:started",
+                        "read_file:failed",
+                        "read_file:started",
+                        "read_file:failed",
+                    ],
+                )
+                self.assertIn("Tool circuit breaker opened", session.history[-4].content)
+                self.assertIn("Tool circuit breaker open", session.history[-2].content)
+
+        asyncio.run(run())
+
+    def test_plain_answer_after_tool_call_is_treated_as_final_answer(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as workspace:
+                root = Path(workspace)
+                (root / "llm.py").write_text("class Message: ...\n", encoding="utf-8")
+                client = FakeStreamingClient(
+                    [
+                        'Thought: read\nAction: read_file\nAction Input: {"path":"llm.py"}',
+                        "**llm.py** 定义了 Message 等 LLM 通信相关结构。",
+                    ]
+                )
+                events = FakeEvents()
+                session = PCodeAgentSession(
+                    client=client,
+                    tools=build_default_registry(root),
+                    config=AgentConfig(max_steps=3),
+                )
+
+                result = await session.run_turn("总结llm.py内容", events)
+
+                self.assertEqual(
+                    result.answer,
+                    "**llm.py** 定义了 Message 等 LLM 通信相关结构。",
+                )
+                self.assertEqual(events.final, result.answer)
+                self.assertNotIn("Invalid response", session.history[-1].content)
+
+        asyncio.run(run())
+
     def test_planning_mode_allows_only_plan_file_writes(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as workspace:

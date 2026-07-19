@@ -105,6 +105,12 @@ class ToolRegistry:
                         is_error=True,
                         metadata={"permission": decision.reason},
                     )
+        return self.run_prechecked(name, args)
+
+    def run_prechecked(self, name: str, args: dict[str, object]) -> ToolResult:
+        tool = self._tools.get(name)
+        if tool is None:
+            return ToolResult(f"Unknown tool: {name}", is_error=True)
         try:
             result = tool.execute(args, self.context)
         except Exception as exc:  # noqa: BLE001 - tool failures should return observations.

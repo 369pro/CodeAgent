@@ -37,6 +37,7 @@ class RunRecord:
     final_answer: str | None
     steps: list[RunStep] = field(default_factory=list)
     error: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class RunRecorder:
@@ -85,6 +86,19 @@ class RunRecorder:
                 ended_at=utc_now(),
             )
         )
+
+    def record_hook_results(self, results: list[object] | tuple[object, ...]) -> None:
+        if not results:
+            return
+        hooks = self.record.metadata.setdefault("hooks", [])
+        if not isinstance(hooks, list):
+            hooks = []
+            self.record.metadata["hooks"] = hooks
+        for result in results:
+            if hasattr(result, "__dict__"):
+                hooks.append(result.__dict__)
+            else:
+                hooks.append(result)
 
     def complete(self, final_answer: str) -> None:
         self.record.status = "completed"

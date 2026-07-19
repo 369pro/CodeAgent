@@ -61,6 +61,28 @@ class PermissionChecker:
         )
 
     def check(self, tool: Tool, arguments: dict[str, object]) -> Decision:
+        hard = self.check_hard_safety(tool, arguments)
+        if hard.effect == "deny":
+            return hard
+        return self.check_policy(tool, arguments)
+
+    def check_hard_safety(self, tool: Tool, arguments: dict[str, object]) -> Decision:
+        content = extract_content(tool.name, arguments)
+        normalized = self._normalized_content(tool.name, content)
+
+        if tool.category == "command":
+            hit, reason = self.detector.detect(content)
+            if hit:
+                return Decision("deny", f"dangerous command blocked: {reason}", content, normalized)
+
+        if tool.category in {"read", "write"} and content:
+            ok, reason = self.sandbox.check(content)
+            if not ok:
+                return Decision("deny", f"path sandbox blocked: {reason}", content, normalized)
+
+        return Decision("allow", "hard safety checks passed", content, normalized)
+
+    def check_policy(self, tool: Tool, arguments: dict[str, object]) -> Decision:
         content = extract_content(tool.name, arguments)
         normalized = self._normalized_content(tool.name, content)
 
@@ -73,17 +95,8 @@ class PermissionChecker:
         if self.mode == PermissionMode.PLAN and tool.name == "exit_plan_mode":
             return Decision("allow", "plan mode exit tool", content, normalized)
 
-        if tool.category == "command":
-            hit, reason = self.detector.detect(content)
-            if hit:
-                return Decision("deny", f"dangerous command blocked: {reason}", content, normalized)
-            if tool.name == "bash" and is_safe_bash_command(content):
-                return Decision("allow", "safe read-only bash command", content, normalized)
-
-        if tool.category in {"read", "write"} and content:
-            ok, reason = self.sandbox.check(content)
-            if not ok:
-                return Decision("deny", f"path sandbox blocked: {reason}", content, normalized)
+        if tool.name == "bash" and is_safe_bash_command(content):
+            return Decision("allow", "safe read-only bash command", content, normalized)
 
         rule_result = self.rule_engine.evaluate(tool.name, content, normalized)
         if rule_result is not None:
